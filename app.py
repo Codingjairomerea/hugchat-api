@@ -1,11 +1,10 @@
 # app.py
 from flask import Flask, request, jsonify
-from hugchat import hugchat
-from hugchat.login import Login
 from flask_cors import CORS
 import os
 from dotenv import load_dotenv
-import traceback
+import requests
+import json
 
 # Cargar variables de entorno
 load_dotenv()
@@ -17,16 +16,12 @@ CORS(app)
 @app.route('/', methods=['GET'])
 def home():
     try:
-        # Verificar variables de entorno
-        email = os.getenv('HUGGINGFACE_EMAIL')
-        password = os.getenv('HUGGINGFACE_PASSWORD')
-        
-        env_status = {
+        # Verificar token
+        api_token = os.getenv('HUGGINGFACE_API_TOKEN')
+        return jsonify({
             'status': 'API is running',
-            'email_configured': bool(email),
-            'password_configured': bool(password)
-        }
-        return jsonify(env_status)
+            'token_configured': bool(api_token)
+        })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -36,7 +31,6 @@ def chat():
         return '', 204
         
     try:
-        # Log de la petición recibida
         print("Recibida petición POST a /chat")
         
         data = request.get_json()
@@ -45,46 +39,49 @@ def chat():
 
         print("Mensaje recibido:", data['message'])
 
-        # Obtener y verificar credenciales
-        email = os.getenv('HUGGINGFACE_EMAIL')
-        password = os.getenv('HUGGINGFACE_PASSWORD')
+        # Obtener token
+        api_token = os.getenv('HUGGINGFACE_API_TOKEN')
+        if not api_token:
+            return jsonify({'error': 'API token not configured'}), 500
+
+        # URL del modelo
+        API_URL = f"https://api-inference.huggingface.co/models/chat/assistant/67462b5e2eb7c0162d496b12"
         
-        if not email or not password:
-            return jsonify({'error': 'Credentials not configured'}), 500
-            
-        print("Iniciando login en HuggingFace...")
+        headers = {
+            "Authorization": f"Bearer {api_token}",
+            "Content-Type": "application/json"
+        }
+
+        # Preparar payload
+        payload = {
+            "inputs": data['message'],
+            "parameters": {
+                "max_length": 500,
+                "temperature": 0.7,
+                "top_p": 0.95
+            }
+        }
+
+        print("Enviando solicitud a Hugging Face API...")
         
-        # Login
-        sign = Login(email, password)
-        cookies = sign.login()
+        # Hacer la solicitud al API
+        response = requests.post(API_URL, headers=headers, json=payload)
         
-        print("Login exitoso, creando chatbot...")
-        
-        # Crear chatbot
-        chatbot = hugchat.ChatBot(cookies=cookies)
-        
-        print("Cambiando al asistente específico...")
-        
-        # Cambiar al asistente específico
-        assistant_id = '67462b5e2eb7c0162d496b12'
-        chatbot.switch_assistant(assistant_id)
-        
-        print("Enviando mensaje al chatbot...")
-        
-        # Obtener respuesta
-        response = chatbot.chat(data['message'])
-        
-        print("Respuesta recibida:", response)
-        
-        return jsonify({'response': response})
+        print("Respuesta recibida del API:", response.status_code)
+        print("Contenido de la respuesta:", response.text)
+
+        if response.status_code == 200:
+            response_data = response.json()
+            return jsonify({'response': response_data[0]['generated_text']})
+        else:
+            return jsonify({
+                'error': 'Error from Hugging Face API',
+                'details': response.text
+            }), response.status_code
 
     except Exception as e:
-        error_traceback = traceback.format_exc()
-        print("Error completo:", error_traceback)
-        return jsonify({
-            'error': str(e),
-            'traceback': error_traceback
-        }), 500
+        print("Error:", str(e))
+        return jsonify({'error': str(e)}), 500
 
 # Esta línea es importante para Gunicorn
 application = app
