@@ -2,8 +2,8 @@ from flask import Flask, request, jsonify
 from hugchat import hugchat
 from hugchat.login import Login
 import os
-from functools import lru_cache
 import time
+import traceback
 
 app = Flask(__name__)
 
@@ -19,11 +19,24 @@ def initialize_chatbot():
     global chatbot
     try:
         print("Iniciando proceso de login...")
+        print(f"Usando email: {EMAIL[:3]}...{EMAIL[-10:] if EMAIL else 'No configurado'}")
+        print(f"Password configurado: {'Sí' if PASSWORD else 'No'}")
+        print(f"Assistant ID configurado: {'Sí' if ASSISTANT_ID else 'No'}")
+
+        if not all([EMAIL, PASSWORD, ASSISTANT_ID]):
+            raise ValueError("Faltan variables de entorno necesarias")
+
         # Iniciar sesión
         sign = Login(EMAIL, PASSWORD)
-        cookies = sign.login()
-        
-        print("Login exitoso, creando instancia de chatbot...")
+        try:
+            cookies = sign.login()
+            print("Login exitoso")
+        except Exception as e:
+            print(f"Error en login: {str(e)}")
+            print(f"Traceback completo: {traceback.format_exc()}")
+            raise
+
+        print("Creando instancia de chatbot...")
         # Crear instancia del chatbot
         chatbot = hugchat.ChatBot(cookies=cookies.get_dict())
         
@@ -34,25 +47,38 @@ def initialize_chatbot():
         print("Chatbot inicializado correctamente")
         return True
     except Exception as e:
-        print(f"Error en la inicialización del chatbot: {str(e)}")
+        print(f"Error detallado en la inicialización del chatbot: {str(e)}")
+        print(f"Tipo de error: {type(e)}")
+        print(f"Traceback completo: {traceback.format_exc()}")
         return False
 
-@app.before_first_request
-def startup():
-    initialize_chatbot()
+@app.route('/')
+def home():
+    return jsonify({"message": "HugChat API está funcionando"}), 200
 
 @app.route('/health', methods=['GET'])
 def health_check():
     global chatbot
-    if chatbot is None:
-        return jsonify({"status": "unhealthy", "message": "Chatbot not initialized"}), 503
-    return jsonify({"status": "healthy"}), 200
+    try:
+        if chatbot is None:
+            success = initialize_chatbot()
+            if not success:
+                return jsonify({
+                    "status": "unhealthy",
+                    "message": "No se pudo inicializar el chatbot"
+                }), 503
+        return jsonify({"status": "healthy"}), 200
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": str(e),
+            "type": str(type(e))
+        }), 500
 
 @app.route('/chat', methods=['POST'])
 def chat():
     global chatbot
     try:
-        # Validar el request
         if not request.is_json:
             return jsonify({"error": "Request must be JSON"}), 400
         
@@ -63,14 +89,12 @@ def chat():
         message = data['message']
         print(f"Mensaje recibido: {message}")
         
-        # Verificar si el chatbot está inicializado
         if chatbot is None:
             print("Chatbot no inicializado, intentando inicializar...")
             if not initialize_chatbot():
-                return jsonify({"error": "Failed to initialize chatbot"}), 500
+                return jsonify({"error": "No se pudo inicializar el chatbot"}), 500
         
         print("Enviando solicitud a Hugging Face API...")
-        # Obtener respuesta
         start_time = time.time()
         response = chatbot.chat(message)
         result = response.wait_until_done()
@@ -84,13 +108,15 @@ def chat():
         
     except Exception as e:
         print(f"Error durante el chat: {str(e)}")
-        # Si hay un error de autenticación, intentar reinicializar
-        if "Authorization" in str(e):
-            print("Error de autenticación detectado, reinicializando chatbot...")
-            if initialize_chatbot():
-                return jsonify({"error": "Please try again, service reinitialized"}), 503
-        return jsonify({"error": str(e)}), 500
+        print(f"Traceback completo: {traceback.format_exc()}")
+        return jsonify({
+            "error": str(e),
+            "type": str(type(e)),
+            "traceback": traceback.format_exc()
+        }), 500
 
 if __name__ == '__main__':
+    # Intentar inicializar el chatbot al inicio
+    initialize_chatbot()
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
